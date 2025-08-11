@@ -1,10 +1,22 @@
 package com.example.miniweb.app
 
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import java.io.InputStream
 import java.net.ServerSocket
 import java.nio.charset.StandardCharsets
 
 const val SERVER_PORT = 8080
+
+@Serializable
+data class Echo(
+    val value: String,
+)
+
+private fun isJson(headers: Map<String, String>): Boolean =
+    headers.entries.any { it.key.equals("Content-Type", true) && it.value.lowercase().startsWith("application/json") }
+
+private inline fun <reified T> decodeJson(body: ByteArray): T = Json.decodeFromString(String(body, Charsets.UTF_8))
 
 data class RequestHead(
     val method: String,
@@ -117,7 +129,16 @@ private fun serveOnce(port: Int) {
                 } else {
                     ByteArray(0)
                 }
-            val bodyText = "method=${head.method}, body=${bodyBytes.size} bytes\n"
+            val bodyText =
+                when {
+                    head.method == "POST" && head.path == "/echo" && isJson(head.headers) -> {
+                        val payload = decodeJson<Echo>(bodyBytes)
+                        "echo.value=${payload.value}\n"
+                    }
+                    else -> {
+                        "method=${head.method}, path=${head.path}, body=${bodyBytes.size} bytes\n"
+                    }
+                }
             val body = bodyText.toByteArray(Charsets.UTF_8)
             val headers =
                 buildString {
