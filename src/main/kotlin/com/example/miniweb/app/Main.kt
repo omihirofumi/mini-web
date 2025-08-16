@@ -4,7 +4,6 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.InputStream
 import java.net.ServerSocket
-import java.nio.charset.StandardCharsets
 
 const val SERVER_PORT = 8080
 
@@ -13,11 +12,6 @@ data class Echo(
     val value: String,
 )
 
-private fun isJson(headers: Map<String, String>): Boolean =
-    headers.entries.any { it.key.equals("Content-Type", true) && it.value.lowercase().startsWith("application/json") }
-
-private inline fun <reified T> decodeJson(body: ByteArray): T = Json.decodeFromString(String(body, Charsets.UTF_8))
-
 data class RequestHead(
     val method: String,
     val target: String,
@@ -25,6 +19,27 @@ data class RequestHead(
     val query: String?,
     val headers: Map<String, String>,
 )
+
+typealias PathParams = Map<String, String>
+
+data class Resp(
+    val status: Int = 200,
+    val contentType: String = "text/plain; charset=utf-8",
+    val body: ByteArray,
+)
+
+typealias Handler = (head: RequestHead, body: ByteArray, params: PathParams) -> Resp
+
+data class Route(
+    val method: String,
+    val pattern: String,
+    val handler: Handler,
+)
+
+private fun isJson(headers: Map<String, String>): Boolean =
+    headers.entries.any { it.key.equals("Content-Type", true) && it.value.lowercase().startsWith("application/json") }
+
+private inline fun <reified T> decodeJson(body: ByteArray): T = Json.decodeFromString(String(body, Charsets.UTF_8))
 
 fun parseHead(raw: ByteArray): Pair<RequestHead, Int>? {
     val end = indexOfCrlfCrlf(raw)
@@ -108,6 +123,42 @@ private fun collectBody(
     }
 }
 
+// /abc/:id
+// /abc/999
+// => params[id] = 999
+private fun matchPath(
+    pattern: String,
+    path: String,
+): PathParams? {
+    val p = pattern.trim('/').split('/').filter { it.isNotEmpty() }
+    val s = path.trim('/').split('/').filter { it.isNotEmpty() }
+    if (p.size != s.size) return null
+    val params = mutableMapOf<String, String>()
+    for (i in p.indices) {
+        val a = p[i]
+        val b = s[i]
+        if (a.startsWith(":")) {
+            params[a.drop(1)] = b
+        } else if (a != b) {
+            return null
+        }
+    }
+    return params
+}
+
+private val routes: List<Route> =
+    listOf(
+        Route("GET", "/health") { _, _, _ -> Resp(body = "ok\n".toByteArray()) },
+        Route("POST", "/echo") { head, body, _ ->
+            if (isJson(head.headers)) {
+                val payload = decodeJson<Echo>(body)
+                Resp(body = "echo.value=${payload.value}".toByteArray())
+            } else {
+                Resp(body = "echo.bytes=${body.size}\n".toByteArray())
+            }
+        },
+    )
+
 fun main() {
     println("mini-web: ready")
     serveOnce(SERVER_PORT)
@@ -139,19 +190,34 @@ private fun serveOnce(port: Int) {
                         "method=${head.method}, path=${head.path}, body=${bodyBytes.size} bytes\n"
                     }
                 }
-            val body = bodyText.toByteArray(Charsets.UTF_8)
-            val headers =
+            val resp: Resp =
+                routes.firstNotNullOfOrNull { r ->
+                    if (r.method != head.method) {
+                        null
+                    } else {
+                        matchPath(r.pattern, head.path)?.let { params -> r.handler(head, bodyBytes, params) }
+                    }
+                } ?: Resp(status = 404, body = "Not Found\n".toByteArray())
+            val headerBytes =
                 buildString {
-                    append("HTTP/1.1 200 OK\r\n")
-                    append("Content-Type: text/plain; charset=utf-8\r\n")
-                    append("Content-Length: ${body.size}\r\n")
-                    append("Connection: close\r\n")
+                    append(
+                        "HTTP/1.1 ${resp.status} ${when (resp.status) {
+                            200 -> "OK"
+                            201 -> "Created"
+                            400 -> "Bad Request"
+                            404 -> "Not Found"
+                            500 -> "Internal Server Error"
+                            else -> "OK"
+                        }}\r\n",
+                    )
+                    append("Content-Type: ${resp.contentType}\r\n")
+                    append("Content-Length: ${resp.body.size}\r\n")
                     append("\r\n")
-                }.toByteArray(StandardCharsets.ISO_8859_1)
+                }.toByteArray(Charsets.ISO_8859_1)
 
             socket.getOutputStream().use { out ->
-                out.write(headers)
-                out.write(body)
+                out.write(headerBytes)
+                out.write(resp.body)
                 out.flush()
             }
         }
