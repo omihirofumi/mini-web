@@ -116,16 +116,13 @@ private fun collectBody(
     require(contentLength <= maxBody) { "body too large: $contentLength" }
     val already = if (raw.size > offset) raw.copyOfRange(offset, raw.size) else ByteArray(0)
     return if (already.size >= contentLength) {
-        already.copyOf(contentLength) // ヘッダ読取時に body も来ていたケース
+        already.copyOf(contentLength)
     } else {
         val remain = contentLength - already.size
         already + readExactly(input, remain)
     }
 }
 
-// /abc/:id
-// /abc/999
-// => params[id] = 999
 private fun matchPath(
     pattern: String,
     path: String,
@@ -146,24 +143,48 @@ private fun matchPath(
     return params
 }
 
+private class RoutesBuilder {
+    private val list = mutableListOf<Route>()
+
+    fun get(
+        pattern: String,
+        handler: Handler,
+    ) {
+        list += Route("get", pattern, handler)
+    }
+
+    fun post(
+        pattern: String,
+        handler: Handler,
+    ) {
+        list += Route("post", pattern, handler)
+    }
+
+    fun build(): List<Route> = list.toList()
+}
+
+private fun routes(block: RoutesBuilder.() -> Unit): List<Route> = RoutesBuilder().apply(block).build()
+
 private val routes: List<Route> =
-    listOf(
-        Route("GET", "/health") { _, _, _ -> Resp(body = "ok\n".toByteArray()) },
-        Route("POST", "/echo") { head, body, _ ->
+    routes {
+        get("/health") { _, _, _ ->
+            Resp(body = "ok\n".toByteArray())
+        }
+        post("/echo") { head, body, _ ->
             if (isJson(head.headers)) {
                 val payload = decodeJson<Echo>(body)
-                Resp(body = "echo.value=${payload.value}".toByteArray())
+                Resp(body = "echo.value=${payload.value}\n".toByteArray())
             } else {
                 Resp(body = "echo.bytes=${body.size}\n".toByteArray())
             }
-        },
-        Route("GET", "/users/:id", { _, _, params ->
+        }
+        get("/users/:id") { _, _, params ->
             params["id"]
                 ?.toIntOrNull()
                 ?.let { id -> Resp(body = "user.id=$id\n".toByteArray()) }
                 ?: Resp(status = 400, body = "id must be int\n".toByteArray())
-        }),
-    )
+        }
+    }
 
 fun main() {
     println("mini-web: ready")
@@ -186,16 +207,7 @@ private fun serveOnce(port: Int) {
                 } else {
                     ByteArray(0)
                 }
-            val bodyText =
-                when {
-                    head.method == "POST" && head.path == "/echo" && isJson(head.headers) -> {
-                        val payload = decodeJson<Echo>(bodyBytes)
-                        "echo.value=${payload.value}\n"
-                    }
-                    else -> {
-                        "method=${head.method}, path=${head.path}, body=${bodyBytes.size} bytes\n"
-                    }
-                }
+
             val resp: Resp =
                 routes.firstNotNullOfOrNull { r ->
                     if (r.method != head.method) {
@@ -204,6 +216,7 @@ private fun serveOnce(port: Int) {
                         matchPath(r.pattern, head.path)?.let { params -> r.handler(head, bodyBytes, params) }
                     }
                 } ?: Resp(status = 404, body = "Not Found\n".toByteArray())
+
             val headerBytes =
                 buildString {
                     append(
