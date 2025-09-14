@@ -157,6 +157,12 @@ private val routes: List<Route> =
                 Resp(body = "echo.bytes=${body.size}\n".toByteArray())
             }
         },
+        Route("GET", "/users/:id", { _, _, params ->
+            params["id"]
+                ?.toIntOrNull()
+                ?.let { id -> Resp(body = "user.id=$id\n".toByteArray()) }
+                ?: Resp(status = 400, body = "id must be int\n".toByteArray())
+        }),
     )
 
 fun main() {
